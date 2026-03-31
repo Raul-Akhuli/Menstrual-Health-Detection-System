@@ -1097,8 +1097,8 @@ async def serve_js() -> FileResponse:
 
 if __name__ == "__main__":
     import uvicorn
-    print("\nStarting Blood Health Advisor...")
-    print("▶ Frontend accessible at: http://127.0.0.1:8000")
-    print("▶ API Docs accessible at: http://127.0.0.1:8000/docs")
-    print("▶ Or open frontend/index.html with Live Preview (port 5500)\n")
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # Use 0.0.0.0 to allow access from external frontend (like Vercel)
+    # Port 8022 as requested for your server
+    print("\nStarting Blood Health Advisor on port 8022...")
+    print("▶ Frontend: Use BASE_URL = 'https://server.uemcseaiml.org:8022/blood'")
+    uvicorn.run("main:app", host="0.0.0.0", port=8022, reload=True)
