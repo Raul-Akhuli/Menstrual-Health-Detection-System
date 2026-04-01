@@ -42,14 +42,25 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # ──────────────────────────────────────────────
 # APPLICATION
 # ──────────────────────────────────────────────
-app = FastAPI(title="Blood Health Advisor", version="3.0")
+app = FastAPI(
+    title="Blood Health Advisor", 
+    version="3.0",
+    # Handles proxying under the /blood sub-directory in production
+    root_path="/blood" if os.getenv("ENVIRONMENT") == "production" else ""
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://blood-project-rosy.vercel.app",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "http://localhost:3000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Serve static assets (CSS, JS, images)
