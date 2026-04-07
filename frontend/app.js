@@ -60,10 +60,9 @@ async function fallbackLocation(statusEl, errMsg) {
     showToast('GPS disabled. Estimating location...', 'warning');
 
     try {
-        const res = await fetch("https://ipapi.co/json/");
-        if (!res.ok) throw new Error("IP Geolocation failed");
+        const res = await fetch("https://ipwho.is/");
         const data = await res.json();
-        if (data.latitude && data.longitude) {
+        if (data.success && data.latitude && data.longitude) {
             state.lat = data.latitude;
             state.lon = data.longitude;
             state.locationReady = true;
@@ -75,12 +74,10 @@ async function fallbackLocation(statusEl, errMsg) {
         }
     } catch (e) {
         statusEl.className = 'location-status error';
-        statusEl.textContent = `❌ Location completely unavailable.`;
-        showToast('Could not detect location. Using default testing mode.', 'error');
-        // Fallback to Kolkata if everything fails completely
-        state.lat = 22.5726;
-        state.lon = 88.3639;
-        state.locationReady = true;
+        statusEl.innerHTML = `❌ <strong>Location detection completely failed!</strong> Please type your city in the manual search bar above.`;
+        showToast('Could not detect your automatic location. Please type it manually.', 'error');
+        // Do NOT silently set a random testing location like Kolkata. Leave it undefined so they are forced to type.
+        state.locationReady = false;
     }
 }
 
@@ -306,7 +303,7 @@ function renderResults(data) {
         const doctorsHtml = (h.available_doctors || []).map((d) => `
             <span class="doctor-chip">
                 <span class="avail-dot ${d.available ? 'online' : (d.nearly ? 'warning' : 'offline')}"></span>
-                ${d.name} · ${d.timing} · 📞 ${d.phone}
+                ${d.name} · <strong>${d.specialization}</strong> · ${d.timing} · 📞 ${d.phone}
             </span>
         `).join('');
 
@@ -324,7 +321,7 @@ function renderResults(data) {
                 ${h.emergency ? '🚨 <span style="color:var(--accent-danger)">Emergency Services Available</span>' : ''}
             </div>
             
-            <a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}" target="_blank" class="btn btn-secondary btn-sm" style="width: 100%; margin: 12px 0; justify-content: center;">
+            <a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}&travelmode=driving" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="width: 100%; margin: 12px 0; justify-content: center;">
                 🧭 Navigate Here
             </a>
             
@@ -341,20 +338,67 @@ function renderResults(data) {
 // ─── HOSPITAL MAP ───────────────────────────────
 function renderHospitalMap(hospitals) {
     const mapContainer = $('#hospitalMap');
+    if (!mapContainer) return;
+    
     mapContainer.style.display = 'block';
 
-    // Destroy previous map if exists
+    // Destroy previous map instance completely
     if (state.hospitalMap) {
-        state.hospitalMap.remove();
+        try {
+            state.hospitalMap.off();
+            state.hospitalMap.remove();
+        } catch (e) {
+            console.warn('Map cleanup warning:', e);
+        }
         state.hospitalMap = null;
     }
 
-    const map = L.map('hospitalMap').setView([state.lat, state.lon], 13);
-    state.hospitalMap = map;
+    // Validate user coordinates
+    if (!state.lat || !state.lon || isNaN(state.lat) || isNaN(state.lon)) {
+        console.error('Invalid user coordinates for map');
+        mapContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary)">📍 Location not available. Please enable GPS or search for a location.</div>';
+        return;
+    }
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors'
+    // Initialize map with error handling
+    let map;
+    try {
+        map = L.map('hospitalMap', {
+            center: [state.lat, state.lon],
+            zoom: 13,
+            zoomControl: true,
+            attributionControl: true,
+        });
+        state.hospitalMap = map;
+    } catch (e) {
+        console.error('Map initialization failed:', e);
+        mapContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary)">❌ Map could not be loaded. Please try again.</div>';
+        return;
+    }
+
+    // Add tile layer with error handling and fallback
+    const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19,
+        errorTileUrl: '',
     }).addTo(map);
+
+    tileLayer.on('tileerror', function(error) {
+        console.warn('Tile loading error:', error);
+    });
+
+    // Force map to recalculate size (fixes rendering glitches)
+    setTimeout(() => {
+        if (state.hospitalMap) {
+            state.hospitalMap.invalidateSize(true);
+        }
+    }, 200);
+    // Second invalidation for slower renders
+    setTimeout(() => {
+        if (state.hospitalMap) {
+            state.hospitalMap.invalidateSize(true);
+        }
+    }, 600);
 
     // Click map to update location
     map.on('click', (e) => {
@@ -379,8 +423,15 @@ function renderHospitalMap(hospitals) {
 
     // Hospital markers (red)
     const bounds = L.latLngBounds([[state.lat, state.lon]]);
+    let validMarkers = 0;
+
     hospitals.forEach((h) => {
-        if (!h.lat || !h.lon) return;
+        // Validate hospital coordinates
+        if (!h.lat || !h.lon || isNaN(h.lat) || isNaN(h.lon)) {
+            console.warn(`Skipping hospital "${h.name}" — invalid coordinates:`, h.lat, h.lon);
+            return;
+        }
+
         const markerColor = h.emergency ? '#ef4444' : '#10b981';
         const marker = L.marker([h.lat, h.lon], {
             icon: L.divIcon({
@@ -391,23 +442,45 @@ function renderHospitalMap(hospitals) {
             })
         }).addTo(map);
 
-        const doctors = (h.available_doctors || []).map(d => `${d.name} (${d.timing})`).join('<br>');
+        const doctors = (h.available_doctors || []).map(d => `${d.name} — ${d.specialization} (${d.timing})`).join('<br>');
+        
+        // Build navigation URL with destination for reliable routing
+        const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}&travelmode=driving`;
+        
         marker.bindPopup(`
-            <div style="min-width:180px">
+            <div style="min-width:200px;max-width:280px">
                 <strong>${h.name}</strong><br>
                 <small>📍 ${h.distance} km away</small><br>
                 <small>📞 ${h.phone || 'N/A'}</small>
                 ${h.emergency ? '<br><small style="color:#ef4444">🚨 Emergency Available</small>' : ''}
                 ${doctors ? '<br><hr style="margin:4px 0"><small><strong>Doctors:</strong><br>' + doctors + '</small>' : ''}
+                <br>
+                <a href="${navUrl}" target="_blank" rel="noopener noreferrer" 
+                   style="display:inline-block;margin-top:6px;padding:4px 10px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:0.8rem;">
+                   🧭 Navigate Here
+                </a>
             </div>
         `);
         bounds.extend([h.lat, h.lon]);
+        validMarkers++;
     });
 
-    // Fit map to show all markers
-    if (hospitals.length > 0) {
-        map.fitBounds(bounds, { padding: [40, 40] });
+    // Fit map to show all markers (only if we have valid hospital markers)
+    if (validMarkers > 0) {
+        try {
+            map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+        } catch (e) {
+            console.warn('fitBounds failed, using default view:', e);
+            map.setView([state.lat, state.lon], 13);
+        }
     }
+
+    // Final size invalidation after all markers are added
+    setTimeout(() => {
+        if (state.hospitalMap) {
+            state.hospitalMap.invalidateSize(true);
+        }
+    }, 1000);
 }
 
 // ─── HOSPITALS ──────────────────────────────────
@@ -447,7 +520,7 @@ async function findHospitals() {
             const doctorsHtml = (h.available_doctors || []).map((d) => `
                 <span class="doctor-chip">
                     <span class="avail-dot ${d.available ? 'online' : (d.nearly ? 'warning' : 'offline')}"></span>
-                    ${d.name} · ${d.timing} · 📞 ${d.phone}
+                    ${d.name} · <strong>${d.specialization}</strong> · ${d.timing} · 📞 ${d.phone}
                 </span>
             `).join('');
 
@@ -476,7 +549,7 @@ async function findHospitals() {
                         ${h.departments?.length ? `<div class="meta-item"><span class="icon">🏢</span> ${h.departments.join(', ')}</div>` : ''}
                     </div>
                     
-                    <a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}" target="_blank" class="btn btn-secondary btn-sm" style="width: 100%; margin: 12px 0 16px 0; justify-content: center;">
+                    <a href="https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lon}&travelmode=driving" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="width: 100%; margin: 12px 0 16px 0; justify-content: center;">
                         🧭 Navigate Here
                     </a>
                     
@@ -507,6 +580,135 @@ async function findHospitals() {
 }
 
 // ─── DOCTORS ────────────────────────────────────
+// Doctor map state
+let doctorMapInstance = null;
+
+function renderDoctorMap(doctors) {
+    const mapContainer = $('#doctorMap');
+    if (!mapContainer) return;
+
+    mapContainer.style.display = 'block';
+
+    // Destroy previous map
+    if (doctorMapInstance) {
+        try {
+            doctorMapInstance.off();
+            doctorMapInstance.remove();
+        } catch (e) {
+            console.warn('Doctor map cleanup:', e);
+        }
+        doctorMapInstance = null;
+    }
+
+    if (!state.lat || !state.lon || isNaN(state.lat) || isNaN(state.lon)) {
+        mapContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary)">📍 Location not available.</div>';
+        return;
+    }
+
+    let map;
+    try {
+        map = L.map('doctorMap', {
+            center: [state.lat, state.lon],
+            zoom: 13,
+            zoomControl: true,
+        });
+        doctorMapInstance = map;
+    } catch (e) {
+        console.error('Doctor map init failed:', e);
+        return;
+    }
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19,
+    }).addTo(map);
+
+    // Invalidate size for proper rendering
+    setTimeout(() => { if (doctorMapInstance) doctorMapInstance.invalidateSize(true); }, 200);
+    setTimeout(() => { if (doctorMapInstance) doctorMapInstance.invalidateSize(true); }, 600);
+
+    // User marker
+    L.marker([state.lat, state.lon], {
+        icon: L.divIcon({
+            className: 'user-marker',
+            html: '<div style="background:#3b82f6;color:#fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:16px;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.3);">📍</div>',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        })
+    }).addTo(map).bindPopup('<strong>📍 Your Location</strong>');
+
+    const bounds = L.latLngBounds([[state.lat, state.lon]]);
+    
+    // Group doctors by hospital (to avoid duplicate markers)
+    const hospitalGroups = {};
+    doctors.forEach(d => {
+        const key = `${d.hospital_lat},${d.hospital_lon}`;
+        if (!hospitalGroups[key]) {
+            hospitalGroups[key] = {
+                lat: d.hospital_lat,
+                lon: d.hospital_lon,
+                name: d.hospital_name,
+                phone: d.hospital_phone,
+                address: d.hospital_address,
+                emergency: d.hospital_emergency,
+                distance: d.hospital_distance_km,
+                doctors: []
+            };
+        }
+        hospitalGroups[key].doctors.push(d);
+    });
+
+    // Create a marker per hospital with all doctors listed
+    Object.values(hospitalGroups).forEach(hosp => {
+        if (!hosp.lat || !hosp.lon || isNaN(hosp.lat) || isNaN(hosp.lon)) return;
+
+        const markerColor = hosp.emergency ? '#ef4444' : '#10b981';
+        const docCount = hosp.doctors.length;
+        
+        const marker = L.marker([hosp.lat, hosp.lon], {
+            icon: L.divIcon({
+                className: 'hospital-marker',
+                html: `<div style="background:${markerColor};color:#fff;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.3);">${docCount}👨‍⚕️</div>`,
+                iconSize: [34, 34],
+                iconAnchor: [17, 17]
+            })
+        }).addTo(map);
+
+        const doctorsList = hosp.doctors.map(d => {
+            const statusDot = d.available_now ? '🟢' : (d.nearly_available ? '🟡' : '🔴');
+            return `${statusDot} <strong>${d.doctor_name}</strong><br>&nbsp;&nbsp;${d.specialization} · ${d.timing}`;
+        }).join('<br>');
+
+        const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${hosp.lat},${hosp.lon}&travelmode=driving`;
+
+        marker.bindPopup(`
+            <div style="min-width:220px;max-width:300px">
+                <strong style="font-size:1rem;">🏥 ${hosp.name}</strong><br>
+                <small>📍 ${hosp.distance} km · ${hosp.address}</small><br>
+                <small>📞 <a href="tel:${hosp.phone}" style="color:#3b82f6">${hosp.phone}</a></small>
+                ${hosp.emergency ? '<br><small style="color:#ef4444">🚨 Emergency Available</small>' : ''}
+                <hr style="margin:6px 0;border-color:rgba(255,255,255,0.1)">
+                <small><strong>Doctors at this hospital:</strong><br>${doctorsList}</small>
+                <br>
+                <a href="${navUrl}" target="_blank" rel="noopener noreferrer"
+                   style="display:block;margin-top:8px;padding:6px 12px;background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:0.82rem;text-align:center;font-weight:600;">
+                   🧭 Navigate to Hospital
+                </a>
+            </div>
+        `);
+        bounds.extend([hosp.lat, hosp.lon]);
+    });
+
+    // Fit bounds
+    try {
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    } catch (e) {
+        map.setView([state.lat, state.lon], 13);
+    }
+
+    setTimeout(() => { if (doctorMapInstance) doctorMapInstance.invalidateSize(true); }, 1000);
+}
+
 async function searchDoctors() {
     if (!state.locationReady) {
         showToast('Wait for location detection', 'error');
@@ -516,11 +718,13 @@ async function searchDoctors() {
     const specialty = $('#specialtyFilter').value;
     const availableOnly = $('#availableOnlyToggle').checked;
     const grid = $('#doctorGrid');
+    const statsEl = $('#doctorStats');
 
     grid.innerHTML = `
         <div class="skeleton skeleton-card"></div>
         <div class="skeleton skeleton-card"></div>
     `;
+    if (statsEl) statsEl.style.display = 'none';
 
     try {
         const radiusElem = $('#docRadius');
@@ -540,12 +744,33 @@ async function searchDoctors() {
                     <p>Try changing filters or increasing search area</p>
                 </div>
             `;
+            if (statsEl) statsEl.style.display = 'none';
             return;
         }
 
+        // Update stats summary
+        const totalDocs = data.doctors.length;
+        const availableDocs = data.doctors.filter(d => d.available_now).length;
+        const uniqueHospitals = new Set(data.doctors.map(d => d.hospital_name)).size;
+
+        if (statsEl) {
+            statsEl.style.display = 'grid';
+            $('#totalDoctorsCount').textContent = totalDocs;
+            $('#availableDoctorsCount').textContent = availableDocs;
+            $('#hospitalsDoctorsCount').textContent = uniqueHospitals;
+        }
+
+        // Render doctor map
+        renderDoctorMap(data.doctors);
+
+        // Render doctor cards
         grid.innerHTML = '';
-        data.doctors.forEach((d) => {
+        data.doctors.forEach((d, index) => {
             const initials = d.doctor_name.replace('Dr. ', '').split(' ').map(n => n[0]).join('').slice(0, 2);
+            const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${d.hospital_lat},${d.hospital_lon}&travelmode=driving`;
+            const phoneClean = (d.hospital_phone || '').replace(/[^+\d]/g, '');
+            const docPhoneClean = (d.doctor_phone || '').replace(/[^+\d]/g, '');
+
             grid.innerHTML += `
                 <div class="doctor-card">
                     <div class="doc-header">
@@ -559,22 +784,29 @@ async function searchDoctors() {
                             ${d.available_now ? 'Available Now' : (d.nearly_available ? 'Available Soon' : 'Unavailable')}
                         </span>
                     </div>
+                    
                     <div class="doc-meta">
-                        <div class="doc-meta-item">🕒 ${d.timing}</div>
-                        <div class="doc-meta-item">📱 ${d.doctor_phone} (Direct)</div>
-                        <div class="doc-meta-item">🏥 ${d.hospital_name} (${d.hospital_distance_km} km)</div>
-                        <div class="doc-meta-item">📍 ${d.hospital_address}</div>
-                        <div class="doc-meta-item">📞 ${d.hospital_phone} (Reception)</div>
-                        ${d.hospital_emergency ? '<div class="doc-meta-item">🚨 Emergency services available</div>' : ''}
+                        <div class="doc-meta-item">🕒 OPD Timing: <strong>${d.timing}</strong></div>
+                        <div class="doc-meta-item">📱 Doctor Direct: <a href="tel:${docPhoneClean}" style="color:var(--accent-primary);text-decoration:none;">${d.doctor_phone}</a></div>
                     </div>
-                    <a href="https://www.google.com/maps/dir/?api=1&destination=${d.hospital_lat},${d.hospital_lon}" target="_blank" class="btn btn-secondary btn-sm" style="width: 100%; margin-top: 16px; justify-content: center;">
-                        🧭 Navigate to Hospital
+
+                    <!-- Hospital Location Card -->
+                    <div class="doc-hospital-info">
+                        <div class="hosp-name">🏥 ${d.hospital_name}</div>
+                        <div class="hosp-detail">📍 ${d.hospital_address} — <strong>${d.hospital_distance_km} km away</strong></div>
+                        <div class="hosp-detail">📞 Hospital Reception: <a href="tel:${phoneClean}">${d.hospital_phone}</a></div>
+                        ${d.hospital_emergency ? '<div class="hosp-detail" style="color:var(--accent-danger)">🚨 Emergency services available 24×7</div>' : ''}
+                        ${d.hospital_rating ? `<div class="hosp-detail">⭐ Rating: ${d.hospital_rating}/5</div>` : ''}
+                    </div>
+
+                    <a href="${navUrl}" target="_blank" rel="noopener noreferrer" class="doc-nav-btn">
+                        🧭 Navigate to ${d.hospital_name}
                     </a>
                 </div>
             `;
         });
 
-        showToast(`Found ${data.doctors.length} doctors`, 'success');
+        showToast(`Found ${data.doctors.length} doctors across ${uniqueHospitals} hospitals`, 'success');
     } catch (err) {
         grid.innerHTML = `
             <div class="empty-state" style="grid-column:1/-1">
@@ -802,7 +1034,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Button handlers
     $('#findHospitalsBtn').addEventListener('click', findHospitals);
-    $('#refreshLocationBtn').addEventListener('click', getLocation);
+    $('#autoLocateBtn').addEventListener('click', getLocation);
     $('#searchLocationBtn').addEventListener('click', searchLocation);
     $('#searchDoctorsBtn').addEventListener('click', searchDoctors);
     

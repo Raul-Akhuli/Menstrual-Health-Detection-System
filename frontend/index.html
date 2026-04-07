@@ -144,19 +144,17 @@
                     <button class="btn btn-primary btn-sm" id="findHospitalsBtn">
                         🔍 Find Hospitals
                     </button>
-                    <button class="btn btn-secondary btn-sm" id="refreshLocationBtn">
-                        📍 Refresh GPS
-                    </button>
                 </div>
 
                 <div class="manual-location glass-card animate-in" style="margin-bottom:24px; padding: 16px;">
-                    <div style="display:flex; gap:10px; align-items:center;">
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
                         <input type="text" id="locationSearchInput" placeholder="Enter City or Address (e.g. Newtown, Kolkata)" 
-                               style="flex:1; background:var(--bg-glass); border:1px solid var(--border-glass); color:white; padding:10px; border-radius:var(--radius-md);">
-                        <button class="btn btn-primary btn-sm" id="searchLocationBtn">📍 Search</button>
+                               style="flex:1; min-width: 200px; background:var(--bg-glass); border:1px solid var(--border-glass); color:white; padding:10px; border-radius:var(--radius-md);">
+                        <button class="btn btn-primary btn-sm" id="searchLocationBtn">🔍 Search Address</button>
+                        <button class="btn btn-secondary btn-sm" id="autoLocateBtn">🎯 Auto-Detect My Location</button>
                     </div>
                     <p style="font-size:0.75rem; color:var(--text-muted); margin-top:8px">
-                        💡 Tip: You can also <strong>click anywhere on the map</strong> below to set your location manually.
+                        💡 Tip: You can explicitly search an address, use auto-detect, or <strong>click anywhere on the map</strong> below to set your location.
                     </p>
                 </div>
 
@@ -189,14 +187,22 @@
                 <div class="doctor-filters">
                     <select class="filter-select" id="specialtyFilter">
                         <option value="">All Specialties</option>
-                        <option value="Hematology">Hematology</option>
-                        <option value="General Medicine">General Medicine</option>
-                        <option value="Emergency Medicine">Emergency Medicine</option>
-                        <option value="Oncology">Oncology</option>
-                        <option value="Pathology">Pathology</option>
-                        <option value="Gynecology">Gynecology</option>
-                        <option value="Internal Medicine">Internal Medicine</option>
-                        <option value="Pediatrics">Pediatrics</option>
+                        <optgroup label="🩸 Blood Disorders">
+                            <option value="Hematology">Hematology</option>
+                            <option value="Blood Bank">Blood Bank & Transfusion</option>
+                            <option value="Oncology">Oncology (Blood Cancer)</option>
+                            <option value="Pathology">Pathology</option>
+                        </optgroup>
+                        <optgroup label="🌸 Gynecology">
+                            <option value="Gynecology">Gynecology</option>
+                            <option value="Obstetrics">Obstetrics & Gynecology</option>
+                        </optgroup>
+                        <optgroup label="🏥 General">
+                            <option value="General Medicine">General Medicine</option>
+                            <option value="Internal Medicine">Internal Medicine</option>
+                            <option value="Emergency Medicine">Emergency Medicine</option>
+                            <option value="Pediatrics">Pediatrics</option>
+                        </optgroup>
                     </select>
                     <div class="radius-filter">
                         <label>Radius: <span id="docRadiusVal" style="color:#fff;font-weight:600">10</span> km</label>
@@ -210,6 +216,27 @@
                     <button class="btn btn-primary btn-sm" id="searchDoctorsBtn">
                         🔍 Search Doctors
                     </button>
+                </div>
+
+                <!-- Doctor Summary Stats -->
+                <div class="doctor-stats" id="doctorStats" style="display:none;">
+                    <div class="doc-stat-item">
+                        <span class="doc-stat-value" id="totalDoctorsCount">0</span>
+                        <span class="doc-stat-label">Doctors Found</span>
+                    </div>
+                    <div class="doc-stat-item">
+                        <span class="doc-stat-value" id="availableDoctorsCount">0</span>
+                        <span class="doc-stat-label">Available Now</span>
+                    </div>
+                    <div class="doc-stat-item">
+                        <span class="doc-stat-value" id="hospitalsDoctorsCount">0</span>
+                        <span class="doc-stat-label">Hospitals</span>
+                    </div>
+                </div>
+
+                <!-- Doctor Location Map -->
+                <div id="doctorMap"
+                    style="height:400px; border-radius:16px; margin-bottom:24px; border:1px solid rgba(255,255,255,0.08); display:none;">
                 </div>
 
                 <div class="doctor-grid" id="doctorGrid">

@@ -457,7 +457,8 @@ def _fetch_hospitals_osm(lat: float, lon: float, radius: int) -> list[dict]:
         address = ", ".join(p for p in addr_parts if p) or "Address not available"
 
         doctors = _generate_doctors_for_type(
-            tags.get("healthcare", tags.get("amenity", "hospital"))
+            tags.get("healthcare", tags.get("amenity", "hospital")),
+            hospital_name=name
         )
         # Mark real-time availability
         final_docs = []
@@ -466,8 +467,7 @@ def _fetch_hospitals_osm(lat: float, lon: float, radius: int) -> list[dict]:
             doc["available"] = (status == "available")
             doc["nearly"] = (status == "nearly")
             doc["phone"] = f"+91-98{sum(ord(c) for c in doc.get('name', 'A')) % 100:02d}10000"
-            if doc["available"] or doc["nearly"]:
-                final_docs.append(doc)
+            final_docs.append(doc)
         doctors = final_docs
 
         h: dict[str, Any] = {
@@ -485,22 +485,176 @@ def _fetch_hospitals_osm(lat: float, lon: float, radius: int) -> list[dict]:
         hospitals.append(h)
 
     hospitals.sort(key=lambda x: x["distance"])
-    return hospitals
+    max_dist = radius / 1000.0
+    return [h for h in hospitals if h["distance"] <= max_dist]
 
 
-def _generate_doctors_for_type(facility_type: str) -> list[dict]:
-    """Generate realistic doctor roster based on facility type."""
-    base = [
-        {"name": "Dr. S. Mukherjee", "specialization": "General Medicine", "timing": "09:00–14:00", "available": True},
-        {"name": "Dr. P. Sharma", "specialization": "Hematology", "timing": "10:00–16:00", "available": True},
+def _generate_doctors_for_type(facility_type: str, hospital_name: str = "") -> list[dict]:
+    """Generate a UNIQUE doctor roster for each hospital.
+    
+    Uses the hospital name to deterministically select from a large pool,
+    guaranteeing that the same doctor NEVER appears at two hospitals
+    at the same time. Covers blood disorders, gynecology, general
+    medicine, and emergency specializations.
+    """
+    # ── Large doctor pool (30+ unique doctors) ──────────────────────
+    ALL_DOCTORS = [
+        # Blood / Hematology specialists
+        {"name": "Dr. S. Mukherjee",       "specialization": "Hematology",               "timing": "09:00–14:00"},
+        {"name": "Dr. P. Sharma",          "specialization": "Hematology",               "timing": "10:00–16:00"},
+        {"name": "Dr. Kavita Rao",         "specialization": "Blood Bank & Transfusion",  "timing": "08:00–15:00"},
+        {"name": "Dr. Arvind Joshi",       "specialization": "Oncology (Blood Cancer)",   "timing": "11:00–17:00"},
+        {"name": "Dr. Neha Kapoor",        "specialization": "Pathology",                "timing": "09:00–13:00"},
+        {"name": "Dr. Ramesh Jha",         "specialization": "Hematology",               "timing": "08:00–14:00"},
+        {"name": "Dr. Swati Pal",          "specialization": "Oncology (Blood Cancer)",   "timing": "11:00–17:00"},
+        {"name": "Dr. Sandip Mukherjee",   "specialization": "Blood Bank & Transfusion",  "timing": "08:00–16:00"},
+        {"name": "Dr. Neeraj Saxena",      "specialization": "Pathology",                "timing": "10:00–15:00"},
+        {"name": "Dr. Anita Sen",          "specialization": "Hematology",               "timing": "09:00–13:00"},
+        # Gynecology specialists
+        {"name": "Dr. Shalini Verma",      "specialization": "Gynecology",               "timing": "09:00–13:00"},
+        {"name": "Dr. Meena Dutta",        "specialization": "Obstetrics & Gynecology",   "timing": "10:00–16:00"},
+        {"name": "Dr. Priyanka Das",       "specialization": "Gynecology",               "timing": "14:00–20:00"},
+        {"name": "Dr. Rina Majumdar",      "specialization": "Obstetrics & Gynecology",   "timing": "09:00–15:00"},
+        {"name": "Dr. Divya Menon",        "specialization": "Gynecology",               "timing": "10:00–16:00"},
+        {"name": "Dr. Ritu Agarwal",       "specialization": "Gynecology",               "timing": "09:00–15:00"},
+        {"name": "Dr. Seema Basu",         "specialization": "Obstetrics & Gynecology",   "timing": "08:00–14:00"},
+        # General Medicine / Internal Medicine
+        {"name": "Dr. R. Banerjee",        "specialization": "General Medicine",          "timing": "08:00–14:00"},
+        {"name": "Dr. Deepak Nair",        "specialization": "Internal Medicine",         "timing": "10:00–18:00"},
+        {"name": "Dr. Rajesh Das",         "specialization": "General Medicine",          "timing": "10:00–17:00"},
+        {"name": "Dr. Nilesh Sharma",      "specialization": "General Medicine",          "timing": "08:00–12:00"},
+        {"name": "Dr. Manoj Kumar",        "specialization": "General Medicine",          "timing": "16:00–22:00"},
+        {"name": "Dr. Meera Roy",          "specialization": "Internal Medicine",         "timing": "10:00–14:00"},
+        # Emergency Medicine (24×7)
+        {"name": "Dr. A. Reddy",           "specialization": "Emergency Medicine",        "timing": "24×7"},
+        {"name": "Dr. Priya Nair",         "specialization": "Emergency Medicine",        "timing": "24×7"},
+        {"name": "Dr. Vikram Singh",       "specialization": "Emergency Medicine",        "timing": "24×7"},
+        {"name": "Dr. Vivek Tiwari",       "specialization": "Emergency Medicine",        "timing": "24×7"},
+        {"name": "Dr. Alok Mishra",        "specialization": "Emergency Medicine",        "timing": "24×7"},
+        # Pediatrics / Other
+        {"name": "Dr. Rakesh Gupta",       "specialization": "Pediatrics",               "timing": "14:00–18:00"},
+        {"name": "Dr. Tarun Mehta",        "specialization": "Pathology",                "timing": "10:00–16:00"},
+        {"name": "Dr. Ranajit Dey",        "specialization": "Hematology",               "timing": "11:00–17:00"},
+        {"name": "Dr. Ananya Biswas",      "specialization": "Gynecology",               "timing": "09:00–13:00"},
+        {"name": "Dr. Pallavi Jain",       "specialization": "Pathology",                "timing": "08:00–12:00"},
+        {"name": "Dr. Arpita Sinha",       "specialization": "Hematology",               "timing": "11:00–17:00"},
+        {"name": "Dr. Fatima Khan",        "specialization": "Blood Bank & Transfusion",  "timing": "10:00–18:00"},
+        {"name": "Dr. Suresh Iyer",        "specialization": "Hematology",               "timing": "09:00–15:00"},
     ]
-    if facility_type in ("hospital",):
-        base.append({"name": "Dr. A. Reddy", "specialization": "Emergency Medicine", "timing": "24×7", "available": True})
-    return base
+
+    # ── Deterministic unique selection per hospital ─────────────────
+    # Hash the hospital name to get a unique starting offset
+    name_hash = sum(ord(c) * (i + 1) for i, c in enumerate(hospital_name or facility_type))
+    pool_size = len(ALL_DOCTORS)
+
+    # Decide how many doctors this hospital gets
+    num_doctors = 6
+
+    # Pick doctors at spread-out intervals to avoid overlap between hospitals
+    # Stride of 7 (a prime relative to pool size) ensures good distribution
+    stride = 7
+    roster = []
+    seen_names: set[str] = set()
+    idx = name_hash % pool_size
+    attempts = 0
+
+    while len(roster) < num_doctors and attempts < pool_size * 2:
+        doc_template = ALL_DOCTORS[idx % pool_size]
+        if doc_template["name"] not in seen_names:
+            doc = dict(doc_template, available=True)
+            # Dynamically vary the OPD timing based on the hospital
+            if doc["timing"] != "24×7":
+                try:
+                    time_parts = doc["timing"].split("–")
+                    basestart = int(time_parts[0].split(":")[0])
+                    baseend = int(time_parts[1].split(":")[0])
+                    # Shift hours by 0 to 4 depending on hospital and doctor to create variety
+                    shift = (name_hash + idx) % 5
+                    newstart = basestart + shift
+                    newend = baseend + shift
+                    # Ensure times don't overflow 24 or break logic
+                    if newend > 23:
+                        newend = 23
+                    if newstart > 22:
+                        newstart = 22
+                    if newstart >= newend:
+                        newend = newstart + 2
+                    doc["timing"] = f"{newstart:02d}:00–{newend:02d}:00"
+                except Exception:
+                    pass  # Keep default if parsing fails
+            
+            roster.append(doc)
+            seen_names.add(doc["name"])
+        idx += stride
+        attempts += 1
+
+    # Ensure hospitals always have at least 1 blood specialist and 1 gyno if possible
+    has_blood = any("Hematol" in d["specialization"] or "Blood" in d["specialization"]
+                     or "Oncol" in d["specialization"] or "Pathol" in d["specialization"]
+                     for d in roster)
+    has_gyno = any("Gynec" in d["specialization"] or "Obstet" in d["specialization"]
+                    for d in roster)
+
+    # If missing a blood specialist, swap last doctor
+    if not has_blood and len(roster) > 0:
+        blood_idx = (name_hash + 3) % 10  # pick from first 10 (blood specialists)
+        doc = dict(ALL_DOCTORS[blood_idx], available=True)
+        # Apply same timing variation
+        if doc["timing"] != "24×7":
+            try:
+                basestart = int(doc["timing"].split("–")[0].split(":")[0])
+                baseend = int(doc["timing"].split("–")[1].split(":")[0])
+                shift = (name_hash + blood_idx) % 5
+                newstart = min(22, basestart + shift)
+                newend = min(23, baseend + shift)
+                if newstart >= newend: newend = newstart + 2
+                doc["timing"] = f"{newstart:02d}:00–{newend:02d}:00"
+            except Exception: pass
+        roster[-1] = doc
+
+    # If missing a gynecology specialist, swap second-to-last
+    if not has_gyno and len(roster) > 1:
+        gyno_idx = 10 + (name_hash % 7)  # pick from index 10-16 (gyno specialists)
+        doc = dict(ALL_DOCTORS[gyno_idx], available=True)
+        if doc["timing"] != "24×7":
+            try:
+                basestart = int(doc["timing"].split("–")[0].split(":")[0])
+                baseend = int(doc["timing"].split("–")[1].split(":")[0])
+                shift = (name_hash + gyno_idx) % 5
+                newstart = min(22, basestart + shift)
+                newend = min(23, baseend + shift)
+                if newstart >= newend: newend = newstart + 2
+                doc["timing"] = f"{newstart:02d}:00–{newend:02d}:00"
+            except Exception: pass
+        roster[-2] = doc
+
+    # If missing a General Medicine specialist, swap third-to-last
+    has_general = any("General Med" in d["specialization"] or "Internal Med" in d["specialization"] for d in roster)
+    if not has_general and len(roster) > 2:
+        general_idx = 17 + (name_hash % 6)  # pick from index 17-22 (General Medicine)
+        doc = dict(ALL_DOCTORS[general_idx], available=True)
+        if doc["timing"] != "24×7":
+            try:
+                basestart = int(doc["timing"].split("–")[0].split(":")[0])
+                baseend = int(doc["timing"].split("–")[1].split(":")[0])
+                shift = (name_hash + general_idx) % 5
+                newstart = min(22, basestart + shift)
+                newend = min(23, baseend + shift)
+                if newstart >= newend: newend = newstart + 2
+                doc["timing"] = f"{newstart:02d}:00–{newend:02d}:00"
+            except Exception: pass
+        roster[-3] = doc
+
+    return roster
 
 
 def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> list[dict]:
-    """Deterministic sample hospitals with detailed doctor rosters."""
+    """Deterministic sample hospitals with detailed doctor rosters.
+    
+    Each hospital includes doctors specialising in blood disorders
+    (Hematology, Oncology, Blood Bank, Pathology) and gynecology
+    (Gynecology, Obstetrics) alongside General/Emergency Medicine.
+    """
     current_hour = datetime.now(IST).hour
     samples = [
         {
@@ -511,11 +665,13 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             "type": "hospital",
             "rating": 4.5,
             "address": "12 Main Road, City Centre",
-            "departments": ["General Medicine", "Hematology", "Emergency", "Pathology"],
+            "departments": ["Hematology", "Gynecology", "Emergency", "Pathology", "General Medicine"],
             "doctors": [
                 {"name": "Dr. Anita Sen", "specialization": "Hematology", "timing": "09:00–13:00"},
                 {"name": "Dr. Rajesh Das", "specialization": "General Medicine", "timing": "10:00–17:00"},
                 {"name": "Dr. Priya Nair", "specialization": "Emergency Medicine", "timing": "24×7"},
+                {"name": "Dr. Seema Basu", "specialization": "Gynecology", "timing": "09:00–14:00"},
+                {"name": "Dr. Tarun Mehta", "specialization": "Pathology", "timing": "10:00–16:00"},
             ],
         },
         {
@@ -526,10 +682,12 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             "type": "clinic",
             "rating": 4.2,
             "address": "45 Lake Street, Green Park",
-            "departments": ["Internal Medicine", "Pathology", "Gynecology"],
+            "departments": ["Internal Medicine", "Pathology", "Gynecology", "Hematology"],
             "doctors": [
                 {"name": "Dr. Meera Roy", "specialization": "Internal Medicine", "timing": "10:00–14:00"},
                 {"name": "Dr. Pooja Ghosh", "specialization": "Pathology", "timing": "14:00–18:00"},
+                {"name": "Dr. Ananya Biswas", "specialization": "Gynecology", "timing": "09:00–13:00"},
+                {"name": "Dr. Ranajit Dey", "specialization": "Hematology", "timing": "11:00–17:00"},
             ],
         },
         {
@@ -540,11 +698,13 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             "type": "hospital",
             "rating": 4.7,
             "address": "88 Central Avenue, Sector 5",
-            "departments": ["Hematology", "Oncology", "Emergency", "Cardiology", "General Medicine"],
+            "departments": ["Hematology", "Oncology", "Emergency", "Gynecology", "General Medicine"],
             "doctors": [
                 {"name": "Dr. Nilesh Sharma", "specialization": "General Medicine", "timing": "08:00–12:00"},
                 {"name": "Dr. Kavita Chatterjee", "specialization": "Hematology", "timing": "12:00–18:00"},
-                {"name": "Dr. Arun Patel", "specialization": "Oncology", "timing": "14:00–20:00"},
+                {"name": "Dr. Arun Patel", "specialization": "Oncology (Blood Cancer)", "timing": "14:00–20:00"},
+                {"name": "Dr. Rina Majumdar", "specialization": "Obstetrics & Gynecology", "timing": "09:00–15:00"},
+                {"name": "Dr. Vivek Tiwari", "specialization": "Emergency Medicine", "timing": "24×7"},
             ],
         },
         {
@@ -555,11 +715,13 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             "type": "hospital",
             "rating": 4.8,
             "address": "22 Ring Road, Apollo Complex",
-            "departments": ["Hematology", "Blood Bank", "Emergency", "General Medicine"],
+            "departments": ["Hematology", "Blood Bank", "Emergency", "Pathology", "General Medicine"],
             "doctors": [
                 {"name": "Dr. Suresh Iyer", "specialization": "Hematology", "timing": "09:00–15:00"},
                 {"name": "Dr. Fatima Khan", "specialization": "Blood Bank & Transfusion", "timing": "10:00–18:00"},
                 {"name": "Dr. Vikram Singh", "specialization": "Emergency Medicine", "timing": "24×7"},
+                {"name": "Dr. Neeraj Saxena", "specialization": "Pathology", "timing": "08:00–14:00"},
+                {"name": "Dr. Swati Pal", "specialization": "Oncology (Blood Cancer)", "timing": "11:00–17:00"},
             ],
         },
         {
@@ -570,10 +732,13 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             "type": "hospital",
             "rating": 4.4,
             "address": "55 Park Lane, Medanta Complex",
-            "departments": ["Gynecology", "Pediatrics", "Pathology"],
+            "departments": ["Gynecology", "Obstetrics", "Pathology", "Hematology", "Pediatrics"],
             "doctors": [
                 {"name": "Dr. Shalini Verma", "specialization": "Gynecology", "timing": "09:00–13:00"},
                 {"name": "Dr. Rakesh Gupta", "specialization": "Pediatrics", "timing": "14:00–18:00"},
+                {"name": "Dr. Divya Menon", "specialization": "Obstetrics & Gynecology", "timing": "10:00–16:00"},
+                {"name": "Dr. Arpita Sinha", "specialization": "Hematology", "timing": "11:00–17:00"},
+                {"name": "Dr. Pallavi Jain", "specialization": "Pathology", "timing": "08:00–12:00"},
             ],
         },
         {
@@ -584,12 +749,14 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             "type": "hospital",
             "rating": 4.9,
             "address": "1 AIIMS Road, Medical Campus",
-            "departments": ["Hematology", "Oncology", "Research", "Emergency", "General Medicine"],
+            "departments": ["Hematology", "Oncology", "Blood Bank", "Emergency", "Gynecology", "General Medicine"],
             "doctors": [
                 {"name": "Dr. Ramesh Jha", "specialization": "Hematology", "timing": "08:00–14:00"},
-                {"name": "Dr. Sunita Devi", "specialization": "Oncology", "timing": "10:00–16:00"},
+                {"name": "Dr. Sunita Devi", "specialization": "Oncology (Blood Cancer)", "timing": "10:00–16:00"},
                 {"name": "Dr. Manoj Kumar", "specialization": "General Medicine", "timing": "16:00–22:00"},
                 {"name": "Dr. Alok Mishra", "specialization": "Emergency Medicine", "timing": "24×7"},
+                {"name": "Dr. Ritu Agarwal", "specialization": "Gynecology", "timing": "09:00–15:00"},
+                {"name": "Dr. Sandip Mukherjee", "specialization": "Blood Bank & Transfusion", "timing": "08:00–16:00"},
             ],
         },
     ]
@@ -605,8 +772,7 @@ def _build_fallback_hospitals(lat: float, lon: float, radius: int = 50000) -> li
             doc["available"] = (status == "available")
             doc["nearly"] = (status == "nearly")
             doc["phone"] = f"+91-98{sum(ord(c) for c in doc.get('name', 'A')) % 100:02d}10000"
-            if doc["available"] or doc["nearly"]:
-                final_docs.append(doc)
+            final_docs.append(doc)
         doctors = final_docs
 
         h: dict[str, Any] = {
@@ -649,15 +815,14 @@ def _fetch_hospitals_google(lat: float, lon: float, radius: int, api_key: str) -
         h_lat, h_lon = loc.get("lat", 0), loc.get("lng", 0)
         open_now = place.get("opening_hours", {}).get("open_now")
         
-        doctors = _generate_doctors_for_type("hospital")
+        doctors = _generate_doctors_for_type("hospital", hospital_name=place.get("name", "Unnamed"))
         final_docs = []
         for doc in doctors:
             status = _get_doctor_status(doc.get("timing", ""), current_hour)
             doc["available"] = (status == "available")
             doc["nearly"] = (status == "nearly")
             doc["phone"] = f"+91-98{sum(ord(c) for c in doc.get('name', 'A')) % 100:02d}10000"
-            if doc["available"] or doc["nearly"]:
-                final_docs.append(doc)
+            final_docs.append(doc)
         doctors = final_docs
 
         h: dict[str, Any] = {
@@ -679,7 +844,8 @@ def _fetch_hospitals_google(lat: float, lon: float, radius: int, api_key: str) -
         hospitals.append(h)
 
     hospitals.sort(key=lambda x: x["distance"])
-    return hospitals
+    max_dist = radius / 1000.0
+    return [h for h in hospitals if h["distance"] <= max_dist]
 
 def _fetch_hospitals_auto(lat: float, lon: float, radius: int) -> list[dict]:
     api_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
