@@ -18,16 +18,10 @@ const ENVIRONMENT = {
 };
 
 // ─── ACTIVE CONFIGURATION ───────────────────────
-// MANUALLY TOGGLE WHICH ENVIRONMENT TO USE:
-// 
-// ⬇️ UNCOMMENT ONE OF THESE TWO LINES:
-//
-// For LOCAL development (test locally on your machine):
-const ACTIVE_ENV = ENVIRONMENT.LOCAL;
-//
-// For PRODUCTION deployment (Vercel → Your UEM Server):
-//const ACTIVE_ENV = ENVIRONMENT.PRODUCTION;
-//
+// AUTO-DETECT: If you're on localhost, use local server.
+// If accessed from any other domain (production), use the production server.
+const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const ACTIVE_ENV = isLocal ? ENVIRONMENT.LOCAL : ENVIRONMENT.PRODUCTION;
 // ─────────────────────────────────────────────────
 
 // ─── DERIVED CONFIGURATION ──────────────────────
